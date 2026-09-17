@@ -48,6 +48,35 @@ function authenticateToken(req, res, next) {
     });
 }
 
+// ==========================================
+// VALIDATION MIDDLEWARE (The Inspector)
+// ==========================================
+function validateRentalInput(req, res, next) {
+    const { vehicle_id, rental_start_date, rental_end_date } = req.body;
+
+    // 1. Check if required fields are missing
+    if (!vehicle_id || !rental_start_date || !rental_end_date) {
+        return res.status(400).json({ error: 'Missing required fields: vehicle_id, rental_start_date, and rental_end_date are required.' });
+    }
+
+    // 2. Validate dates
+    const start = new Date(rental_start_date);
+    const end = new Date(rental_end_date);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format. Please use YYYY-MM-DD.' });
+    }
+
+    // 3. Ensure end date is after start date
+    const diffInDays = Math.ceil((end.getTime() - start.getTime()) / (1000 * 3600 * 24));
+    if (diffInDays <= 0) {
+        return res.status(400).json({ error: 'Rental end date must be strictly after the start date.' });
+    }
+
+    // Everything is safe, open the door to the route!
+    next();
+}
+
 
 // ==========================================
 // USER ROUTES
@@ -139,11 +168,33 @@ app.post('/api/vehicles', (req, res) => {
     });
 });
 
+// GET /api/vehicles (Supports optional search filters like ?brand=Toyota&available=true)
 app.get('/api/vehicles', (req, res) => {
-    const sqlQuery = 'SELECT * FROM vehicles';
-    db.query(sqlQuery, (err, results) => {
-        if (err) return res.status(500).json({ error: 'Database error' });
-        res.status(200).json(results);
+    let sqlQuery = 'SELECT * FROM vehicles WHERE 1=1';
+    const queryParams = [];
+
+    if (req.query.brand) {
+        sqlQuery += ' AND brand = ?';
+        queryParams.push(req.query.brand);
+    }
+
+    if (req.query.available) {
+        sqlQuery += ' AND is_available = ?';
+        const isAvailable = req.query.available === 'true';
+        queryParams.push(isAvailable);
+    }
+
+    db.query(sqlQuery, queryParams, (err, results) => {
+        if (err) {
+            console.error('Database error filtering vehicles:', err);
+            return res.status(500).json({ error: 'Database error' });
+        }
+
+        res.status(200).json({
+            message: 'Vehicles fetched successfully!',
+            count: results.length,
+            vehicles: results
+        });
     });
 });
 
@@ -152,8 +203,8 @@ app.get('/api/vehicles', (req, res) => {
 // RENTAL ROUTES
 // ==========================================
 
-// PROTECTED ROUTE: Book a vehicle securely using the JWT token identity
-app.post('/api/rentals', authenticateToken, (req, res) => {
+// PROTECTED & VALIDATED ROUTE: Book a vehicle securely
+app.post('/api/rentals', authenticateToken, validateRentalInput, (req, res) => {
     const { vehicle_id, rental_start_date, rental_end_date } = req.body;
     const user_id = req.user.userId; // Securely extracted from token
 
@@ -172,8 +223,6 @@ app.post('/api/rentals', authenticateToken, (req, res) => {
         const start = new Date(rental_start_date);
         const end = new Date(rental_end_date);
         const diffInDays = Math.ceil((end.getTime() - start.getTime()) / (1000 * 3600 * 24));
-
-        if (diffInDays <= 0) return res.status(400).json({ error: 'End date must be after start date' });
 
         const total_cost = diffInDays * vehicle.price_per_day;
         const insertRentalQuery = 'INSERT INTO rentals (user_id, vehicle_id, rental_start_date, rental_end_date, total_cost) VALUES (?, ?, ?, ?, ?)';
